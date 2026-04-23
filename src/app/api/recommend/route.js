@@ -10,7 +10,7 @@ function safeJsonParse(text, fallback = null) {
     return JSON.parse(text);
   } catch {
     try {
-      const cleaned = text
+      const cleaned = String(text)
         .replace(/```json/g, "")
         .replace(/```/g, "")
         .trim();
@@ -31,7 +31,7 @@ function getDynamicResultCount(query) {
   const q = query.toLowerCase().trim();
   const words = q.split(/\s+/).filter(Boolean);
 
-  const specificitySignals = [
+  const specificSignals = [
     "under",
     "for",
     "with",
@@ -39,24 +39,21 @@ function getDynamicResultCount(query) {
     "budget",
     "cheap",
     "top",
-    "vs",
-    "between",
-    "family",
     "gaming",
+    "family",
     "travel",
     "school",
     "work",
     "gym",
     "kids",
-    "beginner",
     "professional",
     "$",
   ];
 
   const hasSpecificSignal =
-    specificitySignals.some((word) => q.includes(word)) || /\d/.test(q);
+    specificSignals.some((word) => q.includes(word)) || /\d/.test(q);
 
-  if (!hasSpecificSignal && words.length <= 2) return 9;
+  if (!hasSpecificSignal && words.length <= 2) return 8;
   if (!hasSpecificSignal && words.length <= 4) return 7;
   if (hasSpecificSignal && words.length >= 6) return 4;
   if (hasSpecificSignal && words.length >= 4) return 5;
@@ -64,60 +61,66 @@ function getDynamicResultCount(query) {
 }
 
 async function parseUserIntent(query) {
-  const response = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",
-    messages: [
-      {
-        role: "system",
-        content: `You convert shopping requests into structured JSON.
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        {
+          role: "system",
+          content: `Turn shopping requests into JSON.
 
-Return ONLY valid JSON with this exact shape:
+Return ONLY valid JSON with:
 {
   "category": "string",
   "budget_max": number or null,
-  "budget_min": number or null,
   "use_case": "string or null",
   "must_have": ["string"],
   "avoid": ["string"],
   "keywords": ["string"],
-  "price_sensitive": true or false,
   "broad_query": true or false
 }
 
 Rules:
-- Return JSON only
-- No markdown
-- No explanation
-- category should be a simple product category like:
-  headphones, laptop, keyboard, mouse, monitor, chair, desk, speaker, camera, car, appliance, furniture, skincare, phone, tablet, tv, fitness, shoes, bag, watch, kitchen, general
-- keywords should be 3 to 6 short useful search phrases
-- If the query is broad, broad_query = true
-- If user mentions under/budget/cheap, price_sensitive = true`,
-      },
-      {
-        role: "user",
-        content: query,
-      },
-    ],
-  });
+- JSON only
+- no markdown
+- keep keywords short and useful
+- give 3 to 5 keywords
+- category should be simple like headphones, laptop, keyboard, chair, desk, camera, speaker, mouse, phone, tv, car, furniture, appliance, general`,
+        },
+        {
+          role: "user",
+          content: query,
+        },
+      ],
+    });
 
-  const parsed = safeJsonParse(response.choices[0].message.content, null);
+    const parsed = safeJsonParse(response.choices[0].message.content, null);
 
-  if (!parsed) {
+    if (!parsed) throw new Error("intent parse failed");
+
+    return {
+      category: parsed.category || "general",
+      budget_max: parsed.budget_max || null,
+      use_case: parsed.use_case || null,
+      must_have: Array.isArray(parsed.must_have) ? parsed.must_have : [],
+      avoid: Array.isArray(parsed.avoid) ? parsed.avoid : [],
+      keywords:
+        Array.isArray(parsed.keywords) && parsed.keywords.length
+          ? parsed.keywords
+          : [query],
+      broad_query: Boolean(parsed.broad_query),
+    };
+  } catch {
     return {
       category: "general",
       budget_max: null,
-      budget_min: null,
       use_case: null,
       must_have: [],
       avoid: [],
       keywords: [query],
-      price_sensitive: false,
       broad_query: true,
     };
   }
-
-  return parsed;
 }
 
 async function fetchShoppingResults(searchQuery) {
@@ -170,17 +173,14 @@ function filterCandidates(candidates, intent) {
   const avoidWords = (intent.avoid || []).map((x) => x.toLowerCase());
 
   const badAccessoryWordsByCategory = {
-    headphones: ["case", "ear pads", "earpad", "replacement", "adapter", "cable"],
-    laptop: ["charger", "case", "sleeve", "dock", "adapter", "keyboard cover"],
-    keyboard: ["keycaps", "switches", "wrist rest", "cable", "replacement"],
-    mouse: ["mousepad", "skates", "grips", "replacement feet"],
+    headphones: ["case", "ear pads", "replacement", "adapter", "cable"],
+    laptop: ["charger", "case", "sleeve", "dock", "adapter"],
+    keyboard: ["keycaps", "switches", "wrist rest", "replacement"],
+    mouse: ["mousepad", "skates", "grips"],
     camera: ["lens cap", "tripod", "bag", "strap", "battery"],
     phone: ["case", "screen protector", "charger", "cable"],
-    tablet: ["case", "stylus tip", "screen protector", "charger"],
+    tablet: ["case", "screen protector", "charger"],
     tv: ["remote", "wall mount", "stand", "cable"],
-    chair: ["cover", "wheels", "replacement armrest"],
-    desk: ["drawer", "mat", "organizer"],
-    car: ["tuner", "floor mats", "accessories", "seat cover", "parts", "oil filter"],
   };
 
   const accessoryWords = badAccessoryWordsByCategory[category] || [];
@@ -199,7 +199,7 @@ function filterCandidates(candidates, intent) {
     }
 
     if (intent.budget_max && item.priceNumber) {
-      if (item.priceNumber > intent.budget_max * 1.2) return false;
+      if (item.priceNumber > intent.budget_max * 1.35) return false;
     }
 
     return true;
@@ -207,59 +207,86 @@ function filterCandidates(candidates, intent) {
 }
 
 async function rankCandidates(query, intent, candidates, resultCount) {
-  const compactCandidates = candidates.slice(0, 15).map((item, index) => ({
-    id: index + 1,
-    title: item.title,
-    price: item.price,
-    rating: item.rating,
-    reviews: item.reviews,
-    source: item.source,
-  }));
+  try {
+    const compactCandidates = candidates.slice(0, 15).map((item, index) => ({
+      id: index + 1,
+      title: item.title,
+      price: item.price,
+      rating: item.rating,
+      reviews: item.reviews,
+      source: item.source,
+    }));
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",
-    messages: [
-      {
-        role: "system",
-        content: `You are a product recommendation engine.
+    const response = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        {
+          role: "system",
+          content: `You are a recommendation engine.
 
-You will receive:
-1. The user's request
-2. Parsed intent
-3. Candidate products
+You receive:
+- user query
+- parsed intent
+- candidate products
 
-Choose the best matching products ONLY from the candidate list.
-Do NOT invent products.
+Choose only from the candidate list.
+Do not invent products.
 
-Return ONLY valid JSON array with exactly ${resultCount} items if enough strong matches exist.
-If fewer strong matches exist, return fewer.
+Return ONLY valid JSON array with up to ${resultCount} items.
 
-Each item must have:
-- "id" (number from candidate list)
-- "display_name" (short clean name)
-- "reason" (why it matches the user's request)
-- "pros" (array of 2 strings)
-- "con" (1 string)
-- "label" (one of: "Best Overall", "Best Budget", "Best Premium", "Best Value", "Best for Use Case", "Top Pick")
+Each item must include:
+- id
+- display_name
+- reason
+- pros (array of 2 strings)
+- con
+- label
 
-Rules:
-- Respect budget and use case strongly
-- Avoid weak matches
-- Prefer real common products
-- Output JSON only`,
-      },
-      {
-        role: "user",
-        content: JSON.stringify({
-          query,
-          intent,
-          candidates: compactCandidates,
-        }),
-      },
+Label must be one of:
+"Best Overall", "Best Budget", "Best Value", "Best for Use Case", "Top Pick"
+
+If some candidates are weak, return fewer items.
+Output JSON only.`,
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            query,
+            intent,
+            candidates: compactCandidates,
+          }),
+        },
+      ],
+    });
+
+    return safeJsonParse(response.choices[0].message.content, []);
+  } catch {
+    return [];
+  }
+}
+
+function buildFallbackResults(candidates, resultCount, query) {
+  return candidates.slice(0, resultCount).map((candidate, index) => ({
+    name: candidate.title,
+    price: candidate.price,
+    link: candidate.link,
+    image: candidate.image,
+    source: candidate.source,
+    rating: candidate.rating,
+    reviews: candidate.reviews,
+    pros: [
+      "Strong match for the search",
+      "Available from a real shopping result",
     ],
-  });
-
-  return safeJsonParse(response.choices[0].message.content, []);
+    con: "May not perfectly match every preference",
+    reason: `This was selected as one of the strongest available matches for "${query}".`,
+    label:
+      index === 0
+        ? "Best Overall"
+        : index === 1
+        ? "Best Value"
+        : "Top Pick",
+  }));
 }
 
 export async function POST(req) {
@@ -273,29 +300,52 @@ export async function POST(req) {
     const resultCount = getDynamicResultCount(query);
     const intent = await parseUserIntent(query);
 
-    const searchQueries = Array.isArray(intent.keywords) && intent.keywords.length
-      ? intent.keywords.slice(0, 3)
-      : [query];
+    const searchQueries =
+      Array.isArray(intent.keywords) && intent.keywords.length
+        ? intent.keywords.slice(0, 4)
+        : [query];
 
     let allCandidates = [];
 
     for (const searchQuery of searchQueries) {
-      const results = await fetchShoppingResults(searchQuery);
-      allCandidates.push(...results.map(mapShoppingResult));
+      try {
+        const results = await fetchShoppingResults(searchQuery);
+        allCandidates.push(...results.map(mapShoppingResult));
+      } catch (err) {
+        console.error("Search query failed:", searchQuery, err?.message || err);
+      }
+    }
+
+    if (!allCandidates.length) {
+      try {
+        const fallbackResults = await fetchShoppingResults(query);
+        allCandidates.push(...fallbackResults.map(mapShoppingResult));
+      } catch (err) {
+        console.error("Fallback search failed:", err?.message || err);
+      }
     }
 
     allCandidates = dedupeCandidates(allCandidates);
-    allCandidates = filterCandidates(allCandidates, intent);
 
-    if (!allCandidates.length) {
+    const filteredCandidates = filterCandidates(allCandidates, intent);
+
+    const usableCandidates =
+      filteredCandidates.length >= 3 ? filteredCandidates : allCandidates;
+
+    if (!usableCandidates.length) {
       return Response.json({ result: [] });
     }
 
-    const ranked = await rankCandidates(query, intent, allCandidates, resultCount);
+    const ranked = await rankCandidates(
+      query,
+      intent,
+      usableCandidates,
+      resultCount
+    );
 
-    const finalResults = ranked
+    let finalResults = ranked
       .map((picked) => {
-        const candidate = allCandidates[(picked.id || 0) - 1];
+        const candidate = usableCandidates[(picked.id || 0) - 1];
         if (!candidate) return null;
 
         return {
@@ -313,6 +363,10 @@ export async function POST(req) {
         };
       })
       .filter(Boolean);
+
+    if (!finalResults.length) {
+      finalResults = buildFallbackResults(usableCandidates, resultCount, query);
+    }
 
     return Response.json({ result: finalResults });
   } catch (error) {

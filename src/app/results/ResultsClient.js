@@ -79,9 +79,10 @@ export default function ResultsClient() {
           </div>
         ) : results.length === 0 ? (
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-8 text-center">
-            <h2 className="text-2xl font-semibold mb-2">No results found</h2>
+            <h2 className="text-2xl font-semibold mb-2">No strong matches found</h2>
             <p className="text-zinc-400">
-              Try a broader search or go back and try different words.
+              Try a simpler search, remove one condition, or search a product category
+              like “best wireless headphones under 100”.
             </p>
           </div>
         ) : (
@@ -127,9 +128,7 @@ export default function ResultsClient() {
                   )}
 
                   {item.reason && (
-                    <p className="text-sm text-zinc-300 mb-4">
-                      {item.reason}
-                    </p>
+                    <p className="text-sm text-zinc-300 mb-4">{item.reason}</p>
                   )}
 
                   <div className="mb-3">
