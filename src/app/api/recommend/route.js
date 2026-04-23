@@ -27,68 +27,102 @@ function normalizePrice(priceText) {
   return match ? Number(match[1]) : null;
 }
 
-function getDynamicResultCount(query) {
+function getSearchMode(query) {
   const q = query.toLowerCase().trim();
   const words = q.split(/\s+/).filter(Boolean);
 
-  const specificSignals = [
+  const specificitySignals = [
     "under",
-    "for",
+    "over",
+    "below",
+    "above",
+    "between",
     "with",
+    "for",
     "best",
     "budget",
     "cheap",
-    "top",
-    "gaming",
+    "premium",
     "family",
+    "gaming",
     "travel",
     "school",
     "work",
     "gym",
-    "kids",
     "professional",
+    "fast",
+    "lightweight",
+    "durable",
+    "luxury",
     "$",
   ];
 
   const hasSpecificSignal =
-    specificSignals.some((word) => q.includes(word)) || /\d/.test(q);
+    specificitySignals.some((word) => q.includes(word)) || /\d/.test(q);
 
-  if (!hasSpecificSignal && words.length <= 2) return 8;
-  if (!hasSpecificSignal && words.length <= 4) return 7;
-  if (hasSpecificSignal && words.length >= 6) return 4;
-  if (hasSpecificSignal && words.length >= 4) return 5;
-  return 6;
+  if (!hasSpecificSignal && words.length <= 2) {
+    return {
+      mode: "broad",
+      targetCount: 36,
+      keywordCount: 6,
+    };
+  }
+
+  if (!hasSpecificSignal && words.length <= 4) {
+    return {
+      mode: "medium",
+      targetCount: 24,
+      keywordCount: 5,
+    };
+  }
+
+  return {
+    mode: "specific",
+    targetCount: 14,
+    keywordCount: 4,
+  };
 }
 
-async function parseUserIntent(query) {
+async function parseUserIntent(query, searchMode) {
   try {
     const response = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
+      temperature: 0.3,
       messages: [
         {
           role: "system",
-          content: `Turn shopping requests into valid JSON.
+          content: `You analyze shopping searches like a smart human buyer.
 
-Return ONLY:
+Return ONLY valid JSON with this exact shape:
 {
   "category": "string",
-  "budget_max": number or null,
-  "use_case": "string or null",
-  "must_have": ["string"],
-  "avoid": ["string"],
-  "keywords": ["string"],
-  "broad_query": true or false
+  "broad_query": true,
+  "budget_min": null,
+  "budget_max": null,
+  "must_have": [],
+  "nice_to_have": [],
+  "avoid": [],
+  "keywords": [],
+  "sort_intent": "relevance"
 }
 
 Rules:
-- JSON only
-- no markdown
-- 3 to 5 keywords
-- category should be simple like headphones, laptop, keyboard, chair, desk, camera, speaker, mouse, phone, tv, car, furniture, appliance, skincare, shoes, general`,
+- Return JSON only
+- No markdown
+- Do not make up strict categories if unclear; use natural product types
+- keywords should be broad enough to find many real products
+- For broad searches, make keywords broad and expansive
+- For specific searches, keep constraints but still search wide enough to return many options
+- budget_min and budget_max must be numbers or null
+- must_have / nice_to_have / avoid must be arrays of strings
+- sort_intent can be relevance, price_low, price_high, rating`,
         },
         {
           role: "user",
-          content: query,
+          content: `Search mode: ${searchMode.mode}
+User query: ${query}
+
+Return ${searchMode.keywordCount} useful shopping search keywords.`,
         },
       ],
     });
@@ -99,25 +133,29 @@ Rules:
 
     return {
       category: parsed.category || "general",
-      budget_max: parsed.budget_max || null,
-      use_case: parsed.use_case || null,
+      broad_query: Boolean(parsed.broad_query),
+      budget_min: parsed.budget_min ?? null,
+      budget_max: parsed.budget_max ?? null,
       must_have: Array.isArray(parsed.must_have) ? parsed.must_have : [],
+      nice_to_have: Array.isArray(parsed.nice_to_have) ? parsed.nice_to_have : [],
       avoid: Array.isArray(parsed.avoid) ? parsed.avoid : [],
       keywords:
         Array.isArray(parsed.keywords) && parsed.keywords.length
           ? parsed.keywords
           : [query],
-      broad_query: Boolean(parsed.broad_query),
+      sort_intent: parsed.sort_intent || "relevance",
     };
   } catch {
     return {
       category: "general",
+      broad_query: searchMode.mode === "broad",
+      budget_min: null,
       budget_max: null,
-      use_case: null,
       must_have: [],
+      nice_to_have: [],
       avoid: [],
       keywords: [query],
-      broad_query: true,
+      sort_intent: "relevance",
     };
   }
 }
@@ -167,46 +205,84 @@ function dedupeCandidates(items) {
   return output;
 }
 
-function filterCandidates(candidates, intent) {
-  const category = (intent.category || "").toLowerCase();
+function containsAny(title, words) {
+  const lower = title.toLowerCase();
+  return words.some((word) => lower.includes(String(word).toLowerCase()));
+}
+
+function filterCandidates(candidates, intent, searchMode) {
   const avoidWords = (intent.avoid || []).map((x) => x.toLowerCase());
 
-  const badAccessoryWordsByCategory = {
-    headphones: ["case", "ear pads", "replacement", "adapter", "cable"],
-    laptop: ["charger", "case", "sleeve", "dock", "adapter"],
-    keyboard: ["keycaps", "switches", "wrist rest", "replacement"],
-    mouse: ["mousepad", "skates", "grips"],
-    camera: ["lens cap", "tripod", "bag", "strap", "battery"],
-    phone: ["case", "screen protector", "charger", "cable"],
-    tablet: ["case", "screen protector", "charger"],
-    tv: ["remote", "wall mount", "stand", "cable"],
-  };
-
-  const accessoryWords = badAccessoryWordsByCategory[category] || [];
+  const weakAccessoryWords = [
+    "case",
+    "cover",
+    "replacement",
+    "adapter",
+    "cable",
+    "screen protector",
+    "tripod",
+    "mousepad",
+    "keycaps",
+    "wrist rest",
+  ];
 
   return candidates.filter((item) => {
     const title = item.title.toLowerCase();
     if (!title) return false;
 
-    for (const word of accessoryWords) {
-      if (title.includes(word)) return false;
-    }
+    if (containsAny(title, avoidWords)) return false;
 
-    for (const word of avoidWords) {
-      if (word && title.includes(word)) return false;
+    // Only remove obvious accessories if the query is specific enough.
+    if (searchMode.mode !== "broad" && containsAny(title, weakAccessoryWords)) {
+      return false;
     }
 
     if (intent.budget_max && item.priceNumber) {
-      if (item.priceNumber > intent.budget_max * 1.35) return false;
+      // Broad searches get looser price filtering, specific searches get tighter.
+      const multiplier = searchMode.mode === "specific" ? 1.2 : 1.5;
+      if (item.priceNumber > intent.budget_max * multiplier) return false;
+    }
+
+    if (intent.budget_min && item.priceNumber) {
+      if (item.priceNumber < intent.budget_min * 0.7) return false;
     }
 
     return true;
   });
 }
 
-async function rankCandidates(query, intent, candidates, resultCount) {
+function fallbackRank(candidates, intent, searchMode) {
+  const scored = candidates.map((item) => {
+    let score = 0;
+    const title = item.title.toLowerCase();
+
+    if (item.rating) score += Number(item.rating) * 3;
+    if (item.reviews) score += Math.min(Number(item.reviews) / 100, 10);
+
+    for (const word of intent.must_have || []) {
+      if (title.includes(String(word).toLowerCase())) score += 8;
+    }
+
+    for (const word of intent.nice_to_have || []) {
+      if (title.includes(String(word).toLowerCase())) score += 3;
+    }
+
+    if (intent.budget_max && item.priceNumber) {
+      if (item.priceNumber <= intent.budget_max) score += 10;
+    }
+
+    if (searchMode.mode === "broad") score += 2;
+
+    return { ...item, _score: score };
+  });
+
+  scored.sort((a, b) => b._score - a._score);
+  return scored;
+}
+
+async function aiRankCandidates(query, intent, candidates, targetCount) {
   try {
-    const compactCandidates = candidates.slice(0, 15).map((item, index) => ({
+    const compactCandidates = candidates.slice(0, 40).map((item, index) => ({
       id: index + 1,
       title: item.title,
       price: item.price,
@@ -217,20 +293,21 @@ async function rankCandidates(query, intent, candidates, resultCount) {
 
     const response = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
+      temperature: 0.2,
       messages: [
         {
           role: "system",
-          content: `You are a product recommendation engine.
+          content: `You are a highly capable product ranking engine.
 
-You receive:
-- user query
-- parsed intent
-- candidate products
+You will receive:
+- the user's search
+- extracted buying intent
+- a large candidate list
 
-Choose only from the candidate list.
-Do not invent products.
+Choose ONLY from the candidate list.
+Do NOT invent products.
 
-Return ONLY valid JSON array with up to ${resultCount} items.
+Return ONLY valid JSON array with up to ${targetCount} items.
 
 Each item must include:
 - id
@@ -240,11 +317,15 @@ Each item must include:
 - con
 - label
 
-Label must be one of:
+Allowed labels:
 "Best Overall", "Best Budget", "Best Value", "Best for Use Case", "Top Pick"
 
-Prefer stronger matches but never return random items.
-Output JSON only.`,
+Rules:
+- Respect constraints strongly
+- Keep broad searches broad
+- Keep specific searches tight but not overly narrow
+- Prefer items with stronger fit, better value, and stronger trust signals
+- Output JSON only`,
         },
         {
           role: "user",
@@ -263,8 +344,8 @@ Output JSON only.`,
   }
 }
 
-function buildFallbackResults(candidates, resultCount, query) {
-  return candidates.slice(0, resultCount).map((candidate, index) => ({
+function buildFallbackResults(candidates, targetCount, query) {
+  return candidates.slice(0, targetCount).map((candidate, index) => ({
     name: candidate.title,
     price: candidate.price,
     link: candidate.link,
@@ -273,16 +354,18 @@ function buildFallbackResults(candidates, resultCount, query) {
     rating: candidate.rating,
     reviews: candidate.reviews,
     pros: [
-      "Strong match for the search",
-      "Available from a real shopping result",
+      "Real product result from a live shopping source",
+      "Strong overall match for the search",
     ],
-    con: "May not perfectly match every preference",
-    reason: `One of the strongest available matches for "${query}".`,
+    con: "May not match every single preference perfectly",
+    reason: `Selected as one of the best available matches for "${query}".`,
     label:
       index === 0
         ? "Best Overall"
         : index === 1
         ? "Best Value"
+        : index === 2
+        ? "Best Budget"
         : "Top Pick",
   }));
 }
@@ -295,12 +378,12 @@ export async function POST(req) {
       return Response.json({ result: [] });
     }
 
-    const resultCount = getDynamicResultCount(query);
-    const intent = await parseUserIntent(query);
+    const searchMode = getSearchMode(query);
+    const intent = await parseUserIntent(query, searchMode);
 
     const searchQueries =
       Array.isArray(intent.keywords) && intent.keywords.length
-        ? intent.keywords.slice(0, 4)
+        ? intent.keywords.slice(0, searchMode.keywordCount)
         : [query];
 
     let allCandidates = [];
@@ -325,24 +408,27 @@ export async function POST(req) {
 
     allCandidates = dedupeCandidates(allCandidates);
 
-    const filteredCandidates = filterCandidates(allCandidates, intent);
+    const filteredCandidates = filterCandidates(allCandidates, intent, searchMode);
+
+    // If filtering gets too strict, fall back to the full pool.
     const usableCandidates =
-      filteredCandidates.length >= 3 ? filteredCandidates : allCandidates;
+      filteredCandidates.length >= 8 ? filteredCandidates : allCandidates;
 
     if (!usableCandidates.length) {
       return Response.json({ result: [] });
     }
 
-    const ranked = await rankCandidates(
+    const fallbackSorted = fallbackRank(usableCandidates, intent, searchMode);
+    const ranked = await aiRankCandidates(
       query,
       intent,
-      usableCandidates,
-      resultCount
+      fallbackSorted,
+      searchMode.targetCount
     );
 
     let finalResults = ranked
       .map((picked) => {
-        const candidate = usableCandidates[(picked.id || 0) - 1];
+        const candidate = fallbackSorted[(picked.id || 0) - 1];
         if (!candidate) return null;
 
         return {
@@ -362,10 +448,20 @@ export async function POST(req) {
       .filter(Boolean);
 
     if (!finalResults.length) {
-      finalResults = buildFallbackResults(usableCandidates, resultCount, query);
+      finalResults = buildFallbackResults(
+        fallbackSorted,
+        searchMode.targetCount,
+        query
+      );
     }
 
-    return Response.json({ result: finalResults });
+    return Response.json({
+      result: finalResults,
+      meta: {
+        mode: searchMode.mode,
+        count: finalResults.length,
+      },
+    });
   } catch (error) {
     console.error("ERROR:", error?.response?.data || error.message || error);
     return Response.json({ result: [] }, { status: 500 });
