@@ -67,9 +67,9 @@ async function parseUserIntent(query) {
       messages: [
         {
           role: "system",
-          content: `Turn shopping requests into JSON.
+          content: `Turn shopping requests into valid JSON.
 
-Return ONLY valid JSON with:
+Return ONLY:
 {
   "category": "string",
   "budget_max": number or null,
@@ -83,9 +83,8 @@ Return ONLY valid JSON with:
 Rules:
 - JSON only
 - no markdown
-- keep keywords short and useful
-- give 3 to 5 keywords
-- category should be simple like headphones, laptop, keyboard, chair, desk, camera, speaker, mouse, phone, tv, car, furniture, appliance, general`,
+- 3 to 5 keywords
+- category should be simple like headphones, laptop, keyboard, chair, desk, camera, speaker, mouse, phone, tv, car, furniture, appliance, skincare, shoes, general`,
         },
         {
           role: "user",
@@ -187,7 +186,6 @@ function filterCandidates(candidates, intent) {
 
   return candidates.filter((item) => {
     const title = item.title.toLowerCase();
-
     if (!title) return false;
 
     for (const word of accessoryWords) {
@@ -222,7 +220,7 @@ async function rankCandidates(query, intent, candidates, resultCount) {
       messages: [
         {
           role: "system",
-          content: `You are a recommendation engine.
+          content: `You are a product recommendation engine.
 
 You receive:
 - user query
@@ -245,7 +243,7 @@ Each item must include:
 Label must be one of:
 "Best Overall", "Best Budget", "Best Value", "Best for Use Case", "Top Pick"
 
-If some candidates are weak, return fewer items.
+Prefer stronger matches but never return random items.
 Output JSON only.`,
         },
         {
@@ -279,7 +277,7 @@ function buildFallbackResults(candidates, resultCount, query) {
       "Available from a real shopping result",
     ],
     con: "May not perfectly match every preference",
-    reason: `This was selected as one of the strongest available matches for "${query}".`,
+    reason: `One of the strongest available matches for "${query}".`,
     label:
       index === 0
         ? "Best Overall"
@@ -328,7 +326,6 @@ export async function POST(req) {
     allCandidates = dedupeCandidates(allCandidates);
 
     const filteredCandidates = filterCandidates(allCandidates, intent);
-
     const usableCandidates =
       filteredCandidates.length >= 3 ? filteredCandidates : allCandidates;
 
