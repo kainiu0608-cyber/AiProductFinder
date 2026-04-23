@@ -23,7 +23,7 @@ export default function Home() {
       <div className="max-w-6xl mx-auto">
         <div className="pt-8 pb-8">
           <h1 className="text-5xl md:text-6xl font-bold mb-4 tracking-tight">
-            AI Product Finder
+            THIS IS THE UPDATED VERSION
           </h1>
           <p className="text-zinc-400 text-lg max-w-2xl">
             Find products with smarter recommendations, real shopping links,
