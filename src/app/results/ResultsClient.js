@@ -1,4 +1,5 @@
 "use client";
+
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -103,6 +104,12 @@ export default function ResultsClient() {
                     />
                   </div>
 
+                  {item.label && (
+                    <div className="inline-block mb-3 rounded-full bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-200">
+                      {item.label}
+                    </div>
+                  )}
+
                   <h2 className="text-xl font-bold mb-2">{item.name}</h2>
 
                   <div className="flex items-center justify-between mb-3">
@@ -116,6 +123,12 @@ export default function ResultsClient() {
                     <p className="text-sm text-yellow-400 mb-3">
                       Rating: {item.rating}
                       {item.reviews ? ` (${item.reviews} reviews)` : ""}
+                    </p>
+                  )}
+
+                  {item.reason && (
+                    <p className="text-sm text-zinc-300 mb-4">
+                      {item.reason}
                     </p>
                   )}
 
